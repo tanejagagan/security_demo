@@ -132,6 +132,42 @@ SELECT COUNT(*), tenant_id FROM "transaction" GROUP BY tenant_id;
 
 ## How Row-Level Security Works
 
+```
+  CLIENT (DuckDB)                         SERVER (DazzleDuck :8081)
+  ───────────────                         ─────────────────────────
+
+  dd_login(url, user, pass, claims)
+    claims = {                            POST /v1/login
+      "database": "demo_catalog",  ──────────────────────────►  LoginService
+      "schema":   "main",                                           │
+      "table":    "transaction",                                     │ validate user
+      "filter":   "tenant_id = 1"                                    │ embed claims in JWT
+    }                                     ◄──────────────────────  │
+  JWT token (contains filter claim)                              JWT { filter: "tenant_id = 1" }
+
+
+  dd_read_arrow(url,
+    source_table := '...transaction',     GET /v1/query?q=SELECT * FROM transaction
+    auth_token   := <JWT>)        ────────────────────────────►  QueryService
+                                            Authorization: Bearer <JWT>    │
+                                                                           │
+                                                                   JwtAuthenticationFilter
+                                                                       extract claims
+                                                                           │
+                                                                   JwtClaimBasedAuthorizer
+                                                                       inject WHERE clause
+                                                                           │
+                                                               SQL rewritten to:
+                                                               SELECT * FROM transaction
+                                                               WHERE (tenant_id = 1)
+                                                                           │
+                                                                       DuckDB
+                                                                    (DuckLake catalog)
+                                                                           │
+                                          ◄────────────────────────────── │
+  only tenant_id = 1 rows returned               Arrow IPC stream
+```
+
 1. **Login**: `dd_login` POSTs to `/v1/login` with a claims JSON including a `filter` field:
    ```json
    {"database":"demo_catalog","schema":"main","table":"transaction","filter":"tenant_id = 1"}
