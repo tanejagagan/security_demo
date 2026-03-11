@@ -14,9 +14,30 @@
 #   SELECT * FROM demo_catalog.main."user";
 
 services:
+  postgres:
+    image: postgres:16
+    container_name: demo-postgres
+    environment:
+      POSTGRES_DB: demo
+      POSTGRES_USER: demo
+      POSTGRES_PASSWORD: demo
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./startup/postgres_init.sql:/docker-entrypoint-initdb.d/postgres_init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U demo -d demo"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
   dazzleduck-server-restricted:
     image: dazzleduck/dazzleduck:latest
-    container_name: dazzleduck-demo-catalog
+    container_name: dazzleduck-server-restricted
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "8081:8081"
       - "59307:59307"
@@ -44,7 +65,10 @@ services:
 
   dazzleduck-server-complete:
     image: dazzleduck/dazzleduck:latest
-    container_name: dazzleduck-demo-catalog-complete
+    container_name: dazzleduck-server-complete
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "8082:8081"
       - "59308:59307"
