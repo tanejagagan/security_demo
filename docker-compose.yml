@@ -14,7 +14,7 @@
 #   SELECT * FROM demo_catalog.main."user";
 
 services:
-  dazzleduck-server:
+  dazzleduck-server-restricted:
     image: dazzleduck/dazzleduck:latest
     container_name: dazzleduck-demo-catalog
     ports:
@@ -42,6 +42,31 @@ services:
       start_period: 30s
     restart: unless-stopped
 
+  dazzleduck-server-complete:
+    image: dazzleduck/dazzleduck:latest
+    container_name: dazzleduck-demo-catalog-complete
+    ports:
+      - "8082:8081"
+      - "59308:59307"
+    working_dir: /workspace
+    volumes:
+      - ./warehouse/metadata:/workspace/warehouse/metadata
+      - ./warehouse/data:/workspace/warehouse/data
+      - ./startup:/startup
+    command:
+      - "--conf"
+      - "dazzleduck_server.startup_script_provider.class=io.dazzleduck.sql.flight.LocalStartupConfigProvider"
+      - "--conf"
+      - "dazzleduck_server.startup_script_provider.script_location=/startup/demo_catalog.sql"
+      - "--conf"
+      - "dazzleduck_server.jwt_token.claims.validate.headers=[database,schema,table,filter]"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8082/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
 networks:
   default:
     name: dazzleduck-demo-network
