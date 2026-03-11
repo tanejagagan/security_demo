@@ -1,0 +1,47 @@
+# DazzleDuck Demo Catalog
+#
+# Run from security_demo directory:
+#   docker-compose up
+#
+# Prerequisites:
+#   Build the Docker image first:
+#   cd /Users/tanejagagan/git/dazzleduck-sql-server
+#   ./mvnw clean package -DskipTests && ./mvnw jib:dockerBuild -pl dazzleduck-sql-runtime
+#
+# Query after running:
+#   SELECT * FROM demo_catalog.main."transaction" LIMIT 10;
+#   SELECT * FROM demo_catalog.main.tenant;
+#   SELECT * FROM demo_catalog.main."user";
+
+services:
+  dazzleduck-server:
+    image: dazzleduck/dazzleduck:latest
+    container_name: dazzleduck-demo-catalog
+    ports:
+      - "8081:8081"
+      - "59307:59307"
+    working_dir: /workspace
+    volumes:
+      - ./warehouse/metadata:/workspace/warehouse/metadata
+      - ./warehouse/data:/workspace/warehouse/data
+      - ./startup:/startup
+    command:
+      - "--conf"
+      - "dazzleduck_server.startup_script_provider.class=io.dazzleduck.sql.flight.LocalStartupConfigProvider"
+      - "--conf"
+      - "dazzleduck_server.startup_script_provider.script_location=/startup/demo_catalog.sql"
+      - "--conf"
+      - "dazzleduck_server.access_mode=RESTRICTED"
+      - "--conf"
+      - "dazzleduck_server.jwt_token.claims.validate.headers=[database,schema,table,filter]"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8081/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+networks:
+  default:
+    name: dazzleduck-demo-network
