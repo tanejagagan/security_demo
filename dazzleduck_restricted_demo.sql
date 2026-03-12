@@ -1,6 +1,6 @@
 -- INSTALL dazzleduck FROM community;
 -- LOAD dazzleduck;
-LOAD '/Users/tanejagagan/git/dazzleduck-sql-duckdb/build/release/extension/dazzleduck/dazzleduck.duckdb_extension';
+LOAD '/tmp/dazzleduck.duckdb_extension';
 
 -- Set tenant_id to filter data -- change this value to switch tenant context
 SET VARIABLE tenant_id = 1;

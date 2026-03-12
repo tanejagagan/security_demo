@@ -1,6 +1,7 @@
 -- Load DazzleDuck extension
--- INSTALL dazzleduck FROM community;
-LOAD '/Users/tanejagagan/git/dazzleduck-sql-duckdb/build/release/extension/dazzleduck/dazzleduck.duckdb_extension';
+--INSTALL dazzleduck FROM community;
+LOAD '/tmp/dazzleduck.duckdb_extension';
+ 
 
 -- Set tenant context (change this to switch tenants)
 SET VARIABLE tenant_id = 1;
