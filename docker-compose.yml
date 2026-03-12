@@ -3,15 +3,16 @@
 # Run from security_demo directory:
 #   docker-compose up
 #
+# After postgres is healthy, initialize the DuckLake catalog:
+#   duckdb -init setup_ducklake.sql
+#
+# Then restart the DazzleDuck servers so they pick up the catalog:
+#   docker-compose restart dazzleduck-server-restricted dazzleduck-server-complete
+#
 # Prerequisites:
 #   Build the Docker image first:
 #   cd /Users/tanejagagan/git/dazzleduck-sql-server
 #   ./mvnw clean package -DskipTests && ./mvnw jib:dockerBuild -pl dazzleduck-sql-runtime
-#
-# Query after running:
-#   SELECT * FROM demo_catalog.main."transaction" LIMIT 10;
-#   SELECT * FROM demo_catalog.main.tenant;
-#   SELECT * FROM demo_catalog.main."user";
 
 services:
   postgres:
@@ -24,7 +25,9 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - ./startup/postgres_init.sql:/docker-entrypoint-initdb.d/postgres_init.sql
+      - ./startup/01_create_databases.sql:/docker-entrypoint-initdb.d/01_create_databases.sql
+      - ./startup/02_postgres_init.sql:/docker-entrypoint-initdb.d/02_postgres_init.sql
+      - postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U demo -d demo"]
       interval: 5s
@@ -43,14 +46,13 @@ services:
       - "59307:59307"
     working_dir: /workspace
     volumes:
-      - ./warehouse/metadata:/workspace/warehouse/metadata
       - ./warehouse/data:/workspace/warehouse/data
       - ./startup:/startup
     command:
       - "--conf"
       - "dazzleduck_server.startup_script_provider.class=io.dazzleduck.sql.flight.LocalStartupConfigProvider"
       - "--conf"
-      - "dazzleduck_server.startup_script_provider.script_location=/startup/demo_catalog.sql"
+      - "dazzleduck_server.startup_script_provider.script_location=/startup/ducklake_catalog.sql"
       - "--conf"
       - "dazzleduck_server.access_mode=RESTRICTED"
       - "--conf"
@@ -74,16 +76,25 @@ services:
       - "59308:59307"
     working_dir: /workspace
     volumes:
-      - ./warehouse/metadata:/workspace/warehouse/metadata
       - ./warehouse/data:/workspace/warehouse/data
       - ./startup:/startup
     command:
       - "--conf"
       - "dazzleduck_server.startup_script_provider.class=io.dazzleduck.sql.flight.LocalStartupConfigProvider"
       - "--conf"
-      - "dazzleduck_server.startup_script_provider.script_location=/startup/demo_catalog.sql"
+      - "dazzleduck_server.startup_script_provider.script_location=/startup/ducklake_catalog_writable.sql"
       - "--conf"
       - "dazzleduck_server.jwt_token.claims.validate.headers=[database,schema,table,filter]"
+      - "--conf"
+      - "dazzleduck_server.ingestion_task_factory_provider.class=io.dazzleduck.sql.commons.ingestion.DuckLakeIngestionTaskFactoryProvider"
+      - "--conf"
+      - "dazzleduck_server.ingestion_task_factory_provider.ingestion_queue_table_mapping.0.ingestion_queue=transaction"
+      - "--conf"
+      - "dazzleduck_server.ingestion_task_factory_provider.ingestion_queue_table_mapping.0.table=transaction"
+      - "--conf"
+      - "dazzleduck_server.ingestion_task_factory_provider.ingestion_queue_table_mapping.0.schema=main"
+      - "--conf"
+      - "dazzleduck_server.ingestion_task_factory_provider.ingestion_queue_table_mapping.0.catalog=ducklake_catalog"
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8082/health || exit 1"]
       interval: 5s
@@ -91,6 +102,10 @@ services:
       retries: 10
       start_period: 30s
     restart: unless-stopped
+
+volumes:
+  postgres_data:
+
 networks:
   default:
     name: dazzleduck-demo-network

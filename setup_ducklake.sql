@@ -1,20 +1,24 @@
 INSTALL ducklake;
 LOAD ducklake;
+INSTALL postgres;
+LOAD postgres;
 
--- Attach local DuckLake catalog (replace with s3://bucket/metadata/catalog.duckdb in production)
-ATTACH 'ducklake:warehouse/metadata/demo_catalog.duckdb' AS demo_catalog (DATA_PATH 'warehouse/data/demo_catalog');
+-- Attach DuckLake with Postgres metadata backend
+-- Requires: docker-compose up (postgres must be healthy on localhost:5432)
+ATTACH 'ducklake:postgres:host=localhost port=5432 dbname=ducklake_catalog user=demo password=demo' AS ducklake_catalog
+    (DATA_PATH 'warehouse/data/ducklake_catalog');
 
 -- ---------------------------------------------------------------------------
 -- Table 1: tenant
 -- ---------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS demo_catalog.main.tenant (
+CREATE TABLE IF NOT EXISTS ducklake_catalog.main.tenant (
     tenant_id   INTEGER,
     tenant_name VARCHAR,
     region      VARCHAR,
     created_at  TIMESTAMP
 );
 
-INSERT INTO demo_catalog.main.tenant (tenant_id, tenant_name, region) VALUES
+INSERT INTO ducklake_catalog.main.tenant (tenant_id, tenant_name, region) VALUES
     (1, 'A Inc', 'eu-west-1'),
     (2, 'B Inc', 'us-east-1'),
     (3, 'C Inc', 'eu-central-1');
@@ -22,7 +26,7 @@ INSERT INTO demo_catalog.main.tenant (tenant_id, tenant_name, region) VALUES
 -- ---------------------------------------------------------------------------
 -- Table 2: user (multi-tenant)
 -- ---------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS demo_catalog.main."user" (
+CREATE TABLE IF NOT EXISTS ducklake_catalog.main."user" (
     user_id    INTEGER,
     tenant_id  INTEGER,
     username   VARCHAR,
@@ -30,7 +34,7 @@ CREATE TABLE IF NOT EXISTS demo_catalog.main."user" (
     created_at TIMESTAMP
 );
 
-INSERT INTO demo_catalog.main."user" (user_id, tenant_id, username, email) VALUES
+INSERT INTO ducklake_catalog.main."user" (user_id, tenant_id, username, email) VALUES
     (101, 1, 'alice',  'alice@ainc.com'),
     (102, 1, 'bob',    'bob@ainc.com'),
     (103, 1, 'carol',  'carol@ainc.com'),
@@ -45,7 +49,7 @@ INSERT INTO demo_catalog.main."user" (user_id, tenant_id, username, email) VALUE
 -- ---------------------------------------------------------------------------
 -- Table 3: transaction (multi-tenant web log fact table)
 -- ---------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS demo_catalog.main."transaction" (
+CREATE TABLE IF NOT EXISTS ducklake_catalog.main."transaction" (
     transaction_id  INTEGER,
     tenant_id       INTEGER ,
     user_id         INTEGER ,
@@ -59,7 +63,7 @@ CREATE TABLE IF NOT EXISTS demo_catalog.main."transaction" (
     time            TIMESTAMP
 );
 
-INSERT INTO demo_catalog.main."transaction"
+INSERT INTO ducklake_catalog.main."transaction"
     (transaction_id, tenant_id, user_id, method, path, status_code, response_ms, bytes_sent, ip_address, user_agent, time)
 VALUES
     -- A Inc (tenant 1)
@@ -116,8 +120,8 @@ VALUES
 -- ---------------------------------------------------------------------------
 -- Verify
 -- ---------------------------------------------------------------------------
-SELECT 'tenant'      AS tbl, COUNT(*) AS rows FROM demo_catalog.main.tenant
+SELECT 'tenant'      AS tbl, COUNT(*) AS rows FROM ducklake_catalog.main.tenant
 UNION ALL
-SELECT 'user',              COUNT(*) FROM demo_catalog.main."user"
+SELECT 'user',              COUNT(*) FROM ducklake_catalog.main."user"
 UNION ALL
-SELECT 'transaction',       COUNT(*) FROM demo_catalog.main."transaction";
+SELECT 'transaction',       COUNT(*) FROM ducklake_catalog.main."transaction";

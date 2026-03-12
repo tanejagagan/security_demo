@@ -16,17 +16,42 @@ at login time and enforced server-side on every query.
 
 - [DuckDB](https://duckdb.org/) installed (`duckdb` in PATH)
 - Docker and Docker Compose installed
-- The DazzleDuck DuckDB extension built locally at:
-  `../dazzleduck-sql-duckdb/build/release/extension/dazzleduck/dazzleduck.duckdb_extension`
+- The DazzleDuck DuckDB extension downloaded from the [GitHub Releases page](https://github.com/dazzleduck-web/dazzleduck-sql-duckdb/releases)
+
+Download the extension for your platform and place it at a known path, e.g.:
+
+```bash
+# macOS
+curl -L -o /tmp/dazzleduck.duckdb_extension \
+  https://github.com/dazzleduck-web/dazzleduck-sql-duckdb/releases/download/v0.0.6/dazzleduck.duckdb_extension
+
+# Linux
+curl -L -o /tmp/dazzleduck.duckdb_extension \
+  https://github.com/dazzleduck-web/dazzleduck-sql-duckdb/releases/download/v0.0.6/dazzleduck.linux_amd64.duckdb_extension
+```
+
+Update the `LOAD` path in `open_demo.sql` and `dazzleduck_restricted_demo.sql` to match where you saved it.
 
 ## Setup
 
-### Step 1 — Create demo data
-
-Run once to create the DuckLake catalog and seed all tables:
+### Step 1 — Start Postgres
 
 ```bash
-duckdb -c ".read setup_ducklake.sql"
+docker-compose up -d postgres
+```
+
+Wait until healthy:
+
+```bash
+docker-compose ps postgres   # Status should be "healthy"
+```
+
+### Step 2 — Create demo data
+
+Run once to initialize the DuckLake catalog in Postgres and seed all tables:
+
+```bash
+duckdb -init setup_ducklake.sql /dev/null
 ```
 
 Expected output:
@@ -40,22 +65,30 @@ Expected output:
 └─────────────┴───────┘
 ```
 
-### Step 2 — Start the server
+### Step 3 — Start the servers
 
 ```bash
-docker-compose up -d
+docker-compose up -d dazzleduck-server-restricted dazzleduck-server-complete
 ```
 
-Wait for the server to be ready:
+Wait for both to be ready:
 
 ```bash
-curl -sf http://localhost:8081/health && echo "Ready"
+curl -sf http://localhost:8081/health && echo "Restricted ready"
+curl -sf http://localhost:8082/health && echo "Complete ready"
 ```
 
-Stop the server when done:
+Stop everything when done:
 
 ```bash
 docker-compose down
+```
+
+To fully reset (wipe Postgres data and Parquet files):
+
+```bash
+docker-compose down -v
+rm -rf warehouse/data/ducklake_catalog
 ```
 
 ## Querying with Row-Level Security
@@ -63,7 +96,7 @@ docker-compose down
 Run DuckDB in unsigned mode (required to load the local extension):
 
 ```bash
-duckdb -unsigned -init local_demo_catalog.sql
+duckdb -unsigned -init local_ducklake_catalog.sql
 ```
 
 Then load the demo session (sets `tenant_id = 1` by default and creates views):
@@ -130,6 +163,64 @@ WHERE t.time >= current_date - INTERVAL 2 DAY;
 SELECT COUNT(*), tenant_id FROM "transaction" GROUP BY tenant_id;
 ```
 
+## Architecture
+
+```
+                        ┌─────────────────────────────────────┐
+                        │           PostgreSQL :5432           │
+                        │                                      │
+                        │  DuckLake metadata tables            │
+                        │  (ducklake_schema, ducklake_table,   │
+                        │   ducklake_data_file, ...)           │
+                        │                                      │
+                        │  configuration table                 │
+                        │  (multi-tenant config per tenant)    │
+                        └──────────┬──────────────────────────┘
+                                   │ shared metadata
+                      ┌────────────┴────────────┐
+                      ▼                         ▼
+            ┌─────────────────┐       ┌──────────────────┐
+            │  Port 8081      │       │  Port 8082        │
+            │  RESTRICTED     │       │  COMPLETE         │
+            │  READ_ONLY      │       │  READ_WRITE       │
+            │                 │       │                   │
+            │  JWT filter     │       │  HTTP ingestion   │
+            │  claims         │       │  (Arrow IPC push) │
+            │  enforced       │       │                   │
+            └────────┬────────┘       └────────┬──────────┘
+                     │                         │
+                     └──────────┬──────────────┘
+                                ▼
+                    warehouse/data/ducklake_catalog/
+                    (shared Parquet data files)
+```
+
+**Port 8081 — Restricted server** enforces row-level security via JWT filter claims.
+Every query is rewritten server-side with a `WHERE` clause extracted from the token.
+
+**Port 8082 — Complete server** accepts Arrow IPC data pushed over HTTP to the
+`/v1/ingest` endpoint and commits it to the shared DuckLake catalog via
+`DuckLakeIngestionTaskFactoryProvider`.
+
+**PostgreSQL** stores all DuckLake catalog metadata, enabling both servers to share
+the same catalog with concurrent read/write access (no file locking).
+
+## HTTP Ingestion
+
+Push new rows into `ducklake_catalog.main.transaction` via the complete server:
+
+```bash
+./ingest_transaction.sh
+```
+
+This script:
+1. Gets a JWT token via `POST /v1/login`
+2. Generates Arrow IPC data using Python/pyarrow
+3. Pushes to `POST http://localhost:8082/v1/ingest?ingestion_queue=transaction`
+
+The ingested rows are immediately visible from the restricted server (port 8081)
+because both servers share the same Postgres-backed DuckLake catalog.
+
 ## How Row-Level Security Works
 
 ```
@@ -138,7 +229,7 @@ SELECT COUNT(*), tenant_id FROM "transaction" GROUP BY tenant_id;
 
   dd_login(url, user, pass, claims)
     claims = {                            POST /v1/login
-      "database": "demo_catalog",  ──────────────────────────►  LoginService
+      "database": "ducklake_catalog",  ──────────────────────────►  LoginService
       "schema":   "main",                                           │
       "table":    "transaction",                                     │ validate user
       "filter":   "tenant_id = 1"                                    │ embed claims in JWT
@@ -170,7 +261,7 @@ SELECT COUNT(*), tenant_id FROM "transaction" GROUP BY tenant_id;
 
 1. **Login**: `dd_login` POSTs to `/v1/login` with a claims JSON including a `filter` field:
    ```json
-   {"database":"demo_catalog","schema":"main","table":"transaction","filter":"tenant_id = 1"}
+   {"database":"ducklake_catalog","schema":"main","table":"transaction","filter":"tenant_id = 1"}
    ```
 2. **JWT issued**: The server embeds the `filter` claim in the JWT token.
 3. **Query**: `dd_read_arrow` sends the JWT as `Authorization: Bearer <token>` on every request.
@@ -181,8 +272,74 @@ SELECT COUNT(*), tenant_id FROM "transaction" GROUP BY tenant_id;
 
 | File | Description |
 |------|-------------|
-| `setup_ducklake.sql` | Creates DuckLake catalog and seeds all tables (run once) |
-| `startup/demo_catalog.sql` | Server startup script (attaches catalog in read-only mode) |
-| `local_demo_catalog.sql` | Client-side init: installs arrow/ducklake and attaches catalog |
+| `setup_ducklake.sql` | Initializes DuckLake catalog in Postgres and seeds all tables (run once) |
+| `startup/ducklake_catalog.sql` | Restricted server startup: attaches DuckLake (READ_ONLY) + pg_catalog |
+| `startup/ducklake_catalog_writable.sql` | Complete server startup: attaches DuckLake (READ_WRITE) + pg_catalog |
+| `startup/postgres_init.sql` | Postgres init: creates multi-tenant `configuration` table |
+| `local_ducklake_catalog.sql` | Local DuckDB init: attaches DuckLake via Postgres metadata |
 | `dazzleduck_restricted_demo.sql` | Client session: login, create views with JWT filter claims |
-| `docker-compose.yml` | Starts DazzleDuck server in RESTRICTED mode on port 8081 |
+| `ingest_transaction.sh` | Demo HTTP ingestion: pushes Arrow IPC rows to port 8082 |
+| `docker-compose.yml` | Postgres + restricted server (8081) + complete server (8082) |
+
+## Quick Reference
+
+### Infrastructure
+
+```bash
+# Start Postgres only
+docker-compose up -d postgres
+
+# Check Postgres health
+docker-compose ps postgres
+
+# Start all services
+docker-compose up -d
+
+# Start servers after Postgres is healthy
+docker-compose up -d dazzleduck-server-restricted dazzleduck-server-complete
+
+# Check server health
+curl -sf http://localhost:8081/health && echo "Restricted ready"
+curl -sf http://localhost:8082/health && echo "Complete ready"
+
+# Stop all services
+docker-compose down
+
+# Full reset (wipes Postgres data and Parquet files)
+docker-compose down -v
+rm -rf warehouse/data/ducklake_catalog
+```
+
+### Data Setup
+
+```bash
+# Seed DuckLake catalog and tables (run once after Postgres is healthy)
+duckdb -init setup_ducklake.sql /dev/null
+```
+
+### Local DuckDB Session
+
+```bash
+# Open DuckDB with DuckLake attached (unsigned mode required for extension)
+duckdb -unsigned -init local_ducklake_catalog.sql
+
+# Open persistent demo database with views pre-created
+# (update LOAD path in open_demo.sql to your downloaded extension location first)
+duckdb -unsigned demo.duckdb -init open_demo.sql
+```
+
+```sql
+-- Inside DuckDB: load demo session (login + create views for tenant 1)
+.read dazzleduck_restricted_demo.sql
+
+-- Switch to a different tenant and reload
+SET VARIABLE tenant_id = 2;
+.read dazzleduck_restricted_demo.sql
+```
+
+### Ingestion
+
+```bash
+# Push new transaction rows via Arrow IPC to the complete server (port 8082)
+./ingest_transaction.sh
+```
