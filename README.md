@@ -14,16 +14,16 @@ at login time and enforced server-side on every query.
 
 ## Prerequisites
 
-- [DuckDB](https://duckdb.org/) installed (`duckdb` in PATH)
 - Docker and Docker Compose installed
-- The DazzleDuck DuckDB extension downloaded from the [GitHub Releases page](https://github.com/dazzleduck-web/dazzleduck-sql-duckdb/releases)
+- [DuckDB](https://duckdb.org/) installed (`duckdb` in PATH) — **required only for Option B (DuckDB CLI)**
+- The DazzleDuck DuckDB extension — **required only for Option B (DuckDB CLI)**
 
-Download the extension for your platform and place it at a known path, e.g.:
+Download the extension for your platform and place it at a known path:
 
 ```bash
 # macOS
 curl -L -o /tmp/dazzleduck.duckdb_extension \
-  https://github.com/dazzleduck-web/dazzleduck-sql-duckdb/releases/download/v0.0.6/dazzleduck.duckdb_extension
+  https://github.com/dazzleduck-web/dazzleduck-sql-duckdb/releases/download/v0.0.6/dazzleduck.osx_amd64.duckdb_extension
 
 # Linux
 curl -L -o /tmp/dazzleduck.duckdb_extension \
@@ -74,24 +74,43 @@ docker-compose up -d dazzleduck-server-restricted dazzleduck-server-complete
 Wait for both to be ready:
 
 ```bash
-curl -sf http://localhost:8081/health && echo "Restricted ready"
-curl -sf http://localhost:8082/health && echo "Complete ready"
+curl -sf http://localhost:8082/health && echo "Restricted ready"
+curl -sf http://localhost:8081/health && echo "Complete ready"
 ```
 
-Stop everything when done:
+## Querying
 
-```bash
-docker-compose down
+### Option A — DazzleDuck UI (no local tools required)
+
+Open [https://dazzleduck-ui.netlify.app/](https://dazzleduck-ui.netlify.app/) in your browser and connect to the complete server:
+
+- **URL**: `http://localhost:8081`
+- **Username**: `admin`
+- **Password**: `admin`
+
+Once connected you can query any table directly:
+
+```sql
+SELECT * FROM ducklake_catalog.main.transaction;
 ```
 
-To fully reset (wipe Postgres data and Parquet files):
-
-```bash
-docker-compose down -v
-rm -rf warehouse/data/ducklake_catalog
+```sql
+SELECT tenant_id, COUNT(*) AS total_transactions
+FROM ducklake_catalog.main.transaction
+GROUP BY tenant_id
+ORDER BY tenant_id;
 ```
 
-## Querying with Row-Level Security
+```sql
+SELECT t.time::DATE AS date, COUNT(*) AS requests, AVG(t.response_ms) AS avg_ms
+FROM ducklake_catalog.main.transaction t
+GROUP BY date
+ORDER BY date;
+```
+
+Query results are displayed as a table and can be visualized as charts and graphs directly in the UI.
+
+### Option B — DuckDB CLI with Row-Level Security
 
 Run DuckDB in unsigned mode (required to load the local extension):
 
@@ -111,7 +130,7 @@ This script:
 3. Calls `dd_login` per table with a JWT embedding the filter claim `tenant_id = 1`
 4. Creates views (`tenant`, `user`, `transaction`) backed by `dd_read_arrow`
 
-### Switch tenants
+#### Switch tenants
 
 To query as a different tenant, change the variable before reading the script:
 
@@ -120,15 +139,15 @@ SET VARIABLE tenant_id = 2;
 .read dazzleduck_restricted_demo.sql
 ```
 
-## Example Queries
+#### Example Queries
 
-### List all users (filtered to current tenant)
+##### List all users (filtered to current tenant)
 
 ```sql
 SELECT * FROM "user";
 ```
 
-### Count transactions by username
+##### Count transactions by username
 
 ```sql
 SELECT u.username, COUNT(*) AS total_transactions
@@ -138,7 +157,7 @@ GROUP BY u.username
 ORDER BY total_transactions DESC;
 ```
 
-### Transactions for a specific user on a specific date
+##### Transactions for a specific user on a specific date
 
 ```sql
 SELECT t.transaction_id, t.method, t.path, t.status_code, t.response_ms, t.time
@@ -148,7 +167,7 @@ WHERE u.username = 'bob'
 AND t.time::DATE = '2026-03-01';
 ```
 
-### Transactions in the last N days
+##### Transactions in the last N days
 
 ```sql
 SELECT t.transaction_id, u.username, t.method, t.path, t.status_code, t.time
@@ -157,11 +176,27 @@ JOIN "user" u ON t.user_id = u.user_id
 WHERE t.time >= current_date - INTERVAL 2 DAY;
 ```
 
-### Transaction count by tenant (only current tenant visible)
+##### Transaction count by tenant (only current tenant visible)
 
 ```sql
 SELECT COUNT(*), tenant_id FROM "transaction" GROUP BY tenant_id;
 ```
+
+## HTTP Ingestion
+
+Push new rows into `ducklake_catalog.main.transaction` via the complete server:
+
+```bash
+./ingest_transaction.sh
+```
+
+This script:
+1. Gets a JWT token via `POST /v1/login`
+2. Generates Arrow IPC data using Python/pyarrow
+3. Pushes to `POST http://localhost:8081/v1/ingest?ingestion_queue=transaction`
+
+The ingested rows are immediately visible from the restricted server (port 8082)
+because both servers share the same Postgres-backed DuckLake catalog.
 
 ## Architecture
 
@@ -180,7 +215,7 @@ SELECT COUNT(*), tenant_id FROM "transaction" GROUP BY tenant_id;
                       ┌────────────┴────────────┐
                       ▼                         ▼
             ┌─────────────────┐       ┌──────────────────┐
-            │  Port 8081      │       │  Port 8082        │
+            │  Port 8082      │       │  Port 8081        │
             │  RESTRICTED     │       │  COMPLETE         │
             │  READ_ONLY      │       │  READ_WRITE       │
             │                 │       │                   │
@@ -195,36 +230,20 @@ SELECT COUNT(*), tenant_id FROM "transaction" GROUP BY tenant_id;
                     (shared Parquet data files)
 ```
 
-**Port 8081 — Restricted server** enforces row-level security via JWT filter claims.
+**Port 8082 — Restricted server** enforces row-level security via JWT filter claims.
 Every query is rewritten server-side with a `WHERE` clause extracted from the token.
 
-**Port 8082 — Complete server** accepts Arrow IPC data pushed over HTTP to the
+**Port 8081 — Complete server** accepts Arrow IPC data pushed over HTTP to the
 `/v1/ingest` endpoint and commits it to the shared DuckLake catalog via
-`DuckLakeIngestionTaskFactoryProvider`.
+`DuckLakeIngestionTaskFactoryProvider`. Also used for unrestricted querying via the UI.
 
 **PostgreSQL** stores all DuckLake catalog metadata, enabling both servers to share
 the same catalog with concurrent read/write access (no file locking).
 
-## HTTP Ingestion
-
-Push new rows into `ducklake_catalog.main.transaction` via the complete server:
-
-```bash
-./ingest_transaction.sh
-```
-
-This script:
-1. Gets a JWT token via `POST /v1/login`
-2. Generates Arrow IPC data using Python/pyarrow
-3. Pushes to `POST http://localhost:8082/v1/ingest?ingestion_queue=transaction`
-
-The ingested rows are immediately visible from the restricted server (port 8081)
-because both servers share the same Postgres-backed DuckLake catalog.
-
 ## How Row-Level Security Works
 
 ```
-  CLIENT (DuckDB)                         SERVER (DazzleDuck :8081)
+  CLIENT (DuckDB)                         SERVER (DazzleDuck :8082)
   ───────────────                         ─────────────────────────
 
   dd_login(url, user, pass, claims)
@@ -278,8 +297,9 @@ because both servers share the same Postgres-backed DuckLake catalog.
 | `startup/postgres_init.sql` | Postgres init: creates multi-tenant `configuration` table |
 | `local_ducklake_catalog.sql` | Local DuckDB init: attaches DuckLake via Postgres metadata |
 | `dazzleduck_restricted_demo.sql` | Client session: login, create views with JWT filter claims |
-| `ingest_transaction.sh` | Demo HTTP ingestion: pushes Arrow IPC rows to port 8082 |
-| `docker-compose.yml` | Postgres + restricted server (8081) + complete server (8082) |
+| `open_demo.sql` | Client session: login without filter claims (all tenants visible) |
+| `ingest_transaction.sh` | Demo HTTP ingestion: pushes Arrow IPC rows to port 8081 |
+| `docker-compose.yml` | Postgres + restricted server (8082) + complete server (8081) |
 
 ## Quick Reference
 
@@ -299,8 +319,8 @@ docker-compose up -d
 docker-compose up -d dazzleduck-server-restricted dazzleduck-server-complete
 
 # Check server health
-curl -sf http://localhost:8081/health && echo "Restricted ready"
-curl -sf http://localhost:8082/health && echo "Complete ready"
+curl -sf http://localhost:8082/health && echo "Restricted ready"
+curl -sf http://localhost:8081/health && echo "Complete ready"
 
 # Stop all services
 docker-compose down
@@ -317,7 +337,12 @@ rm -rf warehouse/data/ducklake_catalog
 duckdb -init setup_ducklake.sql /dev/null
 ```
 
-### Local DuckDB Session
+### DazzleDuck UI
+
+Open [https://dazzleduck-ui.netlify.app/](https://dazzleduck-ui.netlify.app/) and connect to the complete server:
+- **URL**: `http://localhost:8081`, **Username**: `admin`, **Password**: `admin`
+
+### Local DuckDB Session (Row-Level Security)
 
 ```bash
 # Open DuckDB with DuckLake attached (unsigned mode required for extension)
@@ -340,6 +365,6 @@ SET VARIABLE tenant_id = 2;
 ### Ingestion
 
 ```bash
-# Push new transaction rows via Arrow IPC to the complete server (port 8082)
+# Push new transaction rows via Arrow IPC to the complete server (port 8081)
 ./ingest_transaction.sh
 ```

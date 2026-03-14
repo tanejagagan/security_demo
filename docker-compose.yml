@@ -42,7 +42,7 @@ services:
       postgres:
         condition: service_healthy
     ports:
-      - "8081:8081"
+      - "8082:8081"
       - "59307:59307"
     working_dir: /workspace
     volumes:
@@ -58,7 +58,7 @@ services:
       - "--conf"
       - "dazzleduck_server.jwt_token.claims.validate.headers=[database,schema,table,filter]"
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8081/health || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:8082/health || exit 1"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -72,7 +72,7 @@ services:
       postgres:
         condition: service_healthy
     ports:
-      - "8082:8081"
+      - "8081:8081"
       - "59308:59307"
     working_dir: /workspace
     volumes:
@@ -96,7 +96,7 @@ services:
       - "--conf"
       - "dazzleduck_server.ingestion_task_factory_provider.ingestion_queue_table_mapping.0.catalog=ducklake_catalog"
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8082/health || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:8081/health || exit 1"]
       interval: 5s
       timeout: 5s
       retries: 10

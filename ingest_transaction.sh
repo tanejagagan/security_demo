@@ -2,10 +2,10 @@
 # Demo: HTTP push ingestion via Arrow IPC + curl
 #
 # Pushes new transaction rows into ducklake_catalog.main.transaction
-# via the DazzleDuck complete server (port 8082).
+# via the DazzleDuck complete server (port 8081).
 #
 # Prerequisites:
-#   - docker-compose up (complete server on port 8082)
+#   - docker-compose up (complete server on port 8081)
 #   - python3 with pyarrow installed: pip3 install pyarrow
 #
 # Usage:
@@ -13,7 +13,7 @@
 
 set -euo pipefail
 
-SERVER="http://localhost:8082"
+SERVER="http://localhost:8081"
 ARROW_FILE="/tmp/new_transactions.arrows"
 
 echo "==> Step 1: Get JWT token from $SERVER"
@@ -24,7 +24,7 @@ RESPONSE=$(curl -sf -X POST "$SERVER/v1/login" \
 TOKEN=$(echo "$RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin)['accessToken'])")
 
 if [ -z "$TOKEN" ]; then
-  echo "ERROR: Failed to get JWT token. Is the server running on port 8082?"
+  echo "ERROR: Failed to get JWT token. Is the server running on port 8081?"
   exit 1
 fi
 echo "    Token: ${TOKEN:0:40}..."

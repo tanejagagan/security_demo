@@ -7,3 +7,4 @@ LOAD postgres;
 -- Requires: docker-compose up (postgres on localhost:5432)
 ATTACH 'ducklake:postgres:host=localhost port=5432 dbname=ducklake_catalog user=demo password=demo' AS ducklake_catalog
     (DATA_PATH 'warehouse/data/ducklake_catalog');
+ATTACH 'host=localhost port=5432 dbname=demo user=demo password=demo' AS pg_catalog (TYPE postgres, READ_ONLY);
